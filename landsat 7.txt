@@ -1,0 +1,64 @@
+Map.addLayer(roi,{},'uppertana',true);
+var roi = ee.FeatureCollection("users/jillianwangari98/uppertana");
+/**
+ * Function to mask clouds based on the pixel_qa band of Landsat SR data.
+ * @param {ee.Image} image Input Landsat SR image
+ * @return {ee.Image} Cloudmasked Landsat image
+ */
+var cloudMaskL457 = function(image) {
+  var qa = image.select('pixel_qa');
+  // If the cloud bit (5) is set and the cloud confidence (7) is high
+  // or the cloud shadow bit is set (3), then it's a bad pixel.
+  var cloud = qa.bitwiseAnd(1 << 5)
+                  .and(qa.bitwiseAnd(1 << 7))
+                  .or(qa.bitwiseAnd(1 << 3));
+  // Remove edge pixels that don't occur in all bands
+  var mask2 = image.mask().reduce(ee.Reducer.min());
+  return image.updateMask(cloud.not()).updateMask(mask2);
+};
+
+var imagery = ee.ImageCollection('LANDSAT/LE07/C01/T1_SR')
+                  .filterDate('2005-05-01', '2007-07-31')
+                  .map(cloudMaskL457);
+
+var visParams = {
+  bands: ['B3', 'B2', 'B1'],
+  min: 0,
+  max: 3000,
+  gamma: 1.4,
+};
+Map.centerObject(roi, 10);
+var uppertana=imagery.median().clip(roi)
+Map.addLayer(uppertana, visParams);
+// Merge the three geometry layers into a single FeatureCollection.
+var newfc = snow.merge(bareland).merge(Water).merge(forest).merge(vegetation).merge(urban);
+var label = 'landcover'
+var bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6','B7']
+var sample = uppertana.select(bands).sampleRegions({
+  'collection': newfc,
+  'properties': [label],
+  'scale': 30
+})
+var Sample = sample.randomColumn()
+
+var split = 0.7
+
+var training = Sample.filter(ee.Filter.lt('random', split))
+var validation = Sample.filter(ee.Filter.gte('random', split))
+
+//Train a randomforest classifier with default parameters.
+var classifier = ee.Classifier.smileRandomForest(10).train(training, label, bands)
+//Classify the image with the same bands used for training.
+var result = uppertana.select(bands).classify(classifier)
+Map.addLayer(result.randomVisualizer(), {}, 'classfied')
+var train_accuracy = classifier.confusionMatrix()
+print('confusionMatrix',train_accuracy)
+print('Overallaccuraccy',train_accuracy.accuracy())
+print('kappa',train_accuracy.kappa())
+//Export results
+Export.image.toDrive({
+image: result,
+description: 'Classified2018',
+scale: 30,
+region: roi,
+});

@@ -1,0 +1,74 @@
+Map.addLayer(roi,{},'uppertana',true);
+var roi = ee.FeatureCollection("users/jillianwangari98/uppertana");
+// Load the Landsat 8 scaled radiance image collection.
+var landsatCollection = ee.ImageCollection("LANDSAT/LC08/C01/T1")
+  .filterDate('2018-01-01', '2018-12-31')
+  .filterBounds(roi)
+  .map(function(image){return image.clip(roi)}) ;
+// Make a cloud-free composite.
+var composite = ee.Algorithms.Landsat.simpleComposite({
+  collection: landsatCollection,
+  asFloat: true
+});
+// Merge the three geometry layers into a single FeatureCollection.
+var newfc = snow.merge(bareland).merge(water).merge(forest).merge(vegetation).merge(agriculture).merge(urban);
+
+// Use these bands for classification.
+var bands = ['B2', 'B3', 'B4', 'B5', 'B6', 'B7'];
+// The name of the property on the points storing the class label.
+var classProperty = 'landcover';
+
+// Sample the composite to generate training data.  Note that the
+// class label is stored in the 'landcover' property.
+var training = composite.select(bands).sampleRegions({
+  collection: newfc,
+  properties: [classProperty],
+  scale: 30
+});
+// Train a CART classifier.
+var classifier = ee.Classifier.smileCart().train({
+  features: training,
+  classProperty: classProperty,
+});
+// Print some info about the classifier (specific to CART).
+print('CART, explained', classifier.explain());
+
+// Classify the composite.
+var classified = composite.classify(classifier);
+Map.centerObject(newfc);
+Map.addLayer(classified, {min: 0, max: 2, palette: ['red', 'green', 'blue']});
+
+// Optionally, do some accuracy assessment.  Fist, add a column of
+// random uniforms to the training dataset.
+var withRandom = training.randomColumn('random');
+
+// We want to reserve some of the data for testing, to avoid overfitting the model.
+var split = 0.7;  // Roughly 70% training, 30% testing.
+var trainingPartition = withRandom.filter(ee.Filter.lt('random', split));
+var testingPartition = withRandom.filter(ee.Filter.gte('random', split));
+
+// Trained with 70% of our data.
+var trainedClassifier = ee.Classifier.smileRandomForest(5).train({
+  features: trainingPartition,
+  classProperty: classProperty,
+  inputProperties: bands
+});
+
+// Classify the test FeatureCollection.
+var test = testingPartition.classify(trainedClassifier);
+//Classify the image with the same bands used for training.
+var result = composite.select(bands).classify(classifier)
+Map.addLayer(result.randomVisualizer(), {}, 'classfied')
+
+// Print the confusion matrix.
+var train_accuracy = classifier.confusionMatrix()
+print('confusionMatrix',train_accuracy)
+print('Overallaccuraccy',train_accuracy.accuracy())
+print('kappa',train_accuracy.kappa())
+//Export results
+Export.image.toDrive({
+image: result,
+description: 'lunew20181',
+region: roi,
+scale: 30,
+});
